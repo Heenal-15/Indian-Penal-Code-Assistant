@@ -154,10 +154,7 @@ with st.sidebar:
         summary = generate_session_summary(st.session_state.memory, _llm)
         st.info(summary)
 
-    if st.button("⚙️ Generate Embeddings"):
-        with st.spinner("Building vector index…"):
-            msg = generate_embeddings()
-            st.success(msg)
+    
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN AREA
