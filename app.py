@@ -1,13 +1,16 @@
 import os
 from dotenv import load_dotenv
 
-from langchain_community.llms.ollama import Ollama
+from langchain_community.llms import Ollama
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_pinecone import PineconeVectorStore
-
 from pinecone import Pinecone
 
+from langgraph.graph import StateGraph
+from typing import TypedDict, Optional, List
+
 from query_router import classify_query
+from tools import retrieve_context, format_answer
 
 # ----------------------------
 # ENV SETUP
@@ -50,13 +53,26 @@ You are an expert Indian legal assistant.
 Rules:
 - Use ONLY the provided context
 - Be precise and structured
+- Avoid long explanations unless required
 - If answer is not in context, say "I don't know"
 """
 
 # ----------------------------
-# ROUTER
+# STATE
 # ----------------------------
-def route_query(query: str):
+class State(TypedDict):
+    query: str
+    route: Optional[str]
+    context: Optional[str]
+    docs: Optional[List[str]]
+    answer: Optional[str]
+
+# ----------------------------
+# ROUTER NODE
+# ----------------------------
+def router_node(state: State):
+    query = state["query"]
+
     router_prompt = f"""
 Classify this legal query into ONE category only:
 
@@ -72,23 +88,56 @@ Return only the category name.
 """
 
     try:
-        return llm.invoke(router_prompt).strip().lower()
+        route = llm.invoke(router_prompt).strip().lower()
     except:
-        return classify_query(query)
+        route = classify_query(query)
+
+    return {"route": route}
 
 # ----------------------------
-# MAIN FUNCTION (RAG PIPELINE)
+# RETRIEVAL NODE (IMPROVED)
 # ----------------------------
-def get_assistance(query: str):
+def compress_reference(text: str) -> str:
+    """
+    NEW: makes references clean and readable
+    """
+    lines = text.split(".")
+    summary = ". ".join(lines[:2])  # first 1–2 sentences only
+    return summary.strip()
 
-    # Step 1: routing
-    route = route_query(query)
 
-    # Step 2: retrieval from Pinecone (FAST)
-    docs = retriever.get_relevant_documents(query)
-    context = "\n\n".join([d.page_content for d in docs])
+def retrieval_node(state: State):
+    query = state["query"]
 
-    # Step 3: reasoning
+    docs = retrieve_context(retriever, query)
+
+    if isinstance(docs, str):
+        docs = [docs]
+
+    clean_docs = []
+
+    for d in docs:
+        text = d.page_content if hasattr(d, "page_content") else str(d)
+        text = text.strip()
+
+        if len(text) > 50:
+            clean_docs.append(compress_reference(text))  # 🔥 IMPROVED HERE
+
+    context = "\n\n".join(clean_docs)
+
+    return {
+        "context": context,
+        "docs": clean_docs
+    }
+
+# ----------------------------
+# REASONING NODE
+# ----------------------------
+def reasoning_node(state: State):
+    query = state["query"]
+    context = state.get("context", "")
+    route = state.get("route", "general_rag")
+
     if route == "general_rag":
 
         prompt = f"""
@@ -100,7 +149,7 @@ Context:
 Question:
 {query}
 
-Answer:
+Answer briefly and clearly:
 """
 
     elif route in ["punishment_query", "legal_status", "section_lookup"]:
@@ -120,7 +169,7 @@ Question:
 
 Return structured response:
 - Section (if applicable)
-- Explanation
+- Explanation (concise)
 - Legal Outcome
 - Key Notes
 
@@ -141,10 +190,51 @@ Explain clearly:
 Answer:
 """
 
-    response = llm.invoke(prompt)
+    raw_answer = llm.invoke(prompt)
+
+    formatted = format_answer(raw_answer, route)
 
     return {
-        "answer": response,
+        "answer": formatted,
         "route": route,
-        "references": [doc.page_content for doc in docs]
+        "context": context,
+        "docs": state.get("docs", [])
+    }
+
+# ----------------------------
+# GRAPH
+# ----------------------------
+graph = StateGraph(State)
+
+graph.add_node("router", router_node)
+graph.add_node("retrieve", retrieval_node)
+graph.add_node("reason", reasoning_node)
+
+graph.set_entry_point("router")
+
+graph.add_edge("router", "retrieve")
+graph.add_edge("retrieve", "reason")
+
+graph.set_finish_point("reason")
+
+app = graph.compile()
+
+# ----------------------------
+# MAIN FUNCTION
+# ----------------------------
+def get_assistance(query: str):
+
+    result = app.invoke({
+        "query": query
+    })
+
+    refs = result.get("docs", [])
+
+    if isinstance(refs, str):
+        refs = [refs]
+
+    return {
+        "answer": result["answer"],
+        "route": result.get("route"),
+        "references": refs
     }

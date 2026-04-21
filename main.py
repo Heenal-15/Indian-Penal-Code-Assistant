@@ -62,8 +62,7 @@ if "selected_question" not in st.session_state:
     st.session_state.selected_question = None
 
 if "references" not in st.session_state:
-    st.session_state.references = None
-
+    st.session_state.references = []   # FIX: always list
 
 # ----------------------------
 # HEADER
@@ -73,8 +72,6 @@ col1, col2 = st.columns([4, 1])
 with col1:
     st.markdown('<div class="title">⚖️ Indian Penal Code Assistant</div>', unsafe_allow_html=True)
     st.markdown('<div class="subtitle">Your AI assistant for Indian legal queries</div>', unsafe_allow_html=True)
-
-
 
 # ----------------------------
 # SIDEBAR HISTORY
@@ -149,11 +146,13 @@ if user_input:
             route = response.get("route", "unknown")
             references = response.get("references", [])
 
+            # FIX: ensure references is always list
+            if isinstance(references, str):
+                references = [references]
+
             st.session_state.references = references
 
             save_query_to_db(user_input, answer, references)
-
-            st.success(f"Agent Route: {route}")
 
             st.markdown("#### Answer")
             st.write(answer)
@@ -169,16 +168,28 @@ if user_input:
             st.markdown("#### Answer (from history)")
             st.write(result["Answer"])
 
-            st.session_state.references = result.get("References", [])
+            refs = result.get("References", [])
+
+            # FIX: safety check
+            if isinstance(refs, str):
+                refs = [refs]
+
+            st.session_state.references = refs
 
 # ----------------------------
 # REFERENCES
 # ----------------------------
 if st.session_state.references:
+
+    # FIX: safety check again (double protection)
+    refs = st.session_state.references
+    if isinstance(refs, str):
+        refs = [refs]
+
     if st.button("Show Related Information"):
         st.markdown("#### Related Information")
 
-        for i, doc in enumerate(st.session_state.references):
+        for i, doc in enumerate(refs):
             st.markdown(f"**Reference {i+1}:**")
             st.write(doc)
             st.write("---")
