@@ -1,7 +1,16 @@
 import streamlit as st
-from db_operations import *
-from app import get_assistance, generate_embeddings
+from difflib import SequenceMatcher
 
+from db_operations import (
+    list_history_from_db,
+    delete_history_from_db,
+    save_query_to_db,
+)
+from app import get_assistance
+
+# ----------------------------
+# CONFIG
+# ----------------------------
 st.set_page_config(
     page_title="Indian Penal Code Assistant",
     layout="wide",
@@ -43,6 +52,20 @@ st.markdown(
 )
 
 # ----------------------------
+# INIT SESSION STATE
+# ----------------------------
+if "history" not in st.session_state:
+    res = list_history_from_db()
+    st.session_state.history = res.get("result", []) if res.get("status") == "success" else []
+
+if "selected_question" not in st.session_state:
+    st.session_state.selected_question = None
+
+if "references" not in st.session_state:
+    st.session_state.references = None
+
+
+# ----------------------------
 # HEADER
 # ----------------------------
 col1, col2 = st.columns([4, 1])
@@ -51,24 +74,7 @@ with col1:
     st.markdown('<div class="title">⚖️ Indian Penal Code Assistant</div>', unsafe_allow_html=True)
     st.markdown('<div class="subtitle">Your AI assistant for Indian legal queries</div>', unsafe_allow_html=True)
 
-with col2:
-    if st.button("Generate Embeddings"):
-        with st.spinner("Generating embeddings..."):
-            msg = generate_embeddings()
-            st.success(msg)
 
-# ----------------------------
-# SESSION STATE INIT
-# ----------------------------
-if "history" not in st.session_state:
-    history = list_history_from_db()
-    st.session_state.history = history.get("result", []) if history["status"] == "success" else []
-
-if "selected_question" not in st.session_state:
-    st.session_state.selected_question = None
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
 
 # ----------------------------
 # SIDEBAR HISTORY
@@ -77,10 +83,10 @@ with st.sidebar:
     st.markdown('<div class="sidebar-section"><b>Recently Asked Questions</b></div>', unsafe_allow_html=True)
 
     for idx, entry in enumerate(st.session_state.history, start=1):
+        qid = entry["ID"]
         question = entry["Question"]
-        question_id = entry["ID"]
 
-        if st.button(f"{idx}. {question}", key=f"q_{question_id}"):
+        if st.button(f"{idx}. {question}", key=f"q_{qid}"):
             st.session_state.selected_question = entry
 
 # ----------------------------
@@ -97,9 +103,12 @@ if st.session_state.selected_question:
     if st.button("Delete This Question"):
         delete_history_from_db(entry["ID"])
 
-        st.session_state.history = list_history_from_db().get("result", [])
-        st.session_state.selected_question = None
+        st.session_state.history = [
+            h for h in st.session_state.history
+            if h["ID"] != entry["ID"]
+        ]
 
+        st.session_state.selected_question = None
         st.success("Deleted successfully!")
 
 # ----------------------------
@@ -116,53 +125,60 @@ if user_input:
 
     with st.spinner("Agent is thinking..."):
 
-        # ❗ FIXED: no SQL string condition
         db_response = list_history_from_db()
+        history = db_response.get("result", []) if db_response.get("status") == "success" else []
+
+        # fuzzy duplicate check
         existing = [
-            r for r in db_response.get("result", [])
-            if r["Question"].strip().lower() == user_input.strip().lower()
+            r for r in history
+            if SequenceMatcher(
+                None,
+                r["Question"].lower().strip(),
+                user_input.lower().strip()
+            ).ratio() > 0.85
         ]
 
         # ----------------------------
-        # IF NOT IN DB → CALL AGENT
+        # NEW QUERY
         # ----------------------------
-        if len(existing) == 0:
+        if not existing:
 
             response = get_assistance(user_input.strip())
 
             answer = response["answer"]
-            route = response["route"]
-            references = response["references"]
+            route = response.get("route", "unknown")
+            references = response.get("references", [])
+
+            st.session_state.references = references
 
             save_query_to_db(user_input, answer, references)
 
             st.success(f"Agent Route: {route}")
 
-            st.markdown("#### Answer:")
+            st.markdown("#### Answer")
             st.write(answer)
 
             st.session_state.history = list_history_from_db().get("result", [])
 
         # ----------------------------
-        # IF ALREADY EXISTS
+        # EXISTING QUERY
         # ----------------------------
         else:
             result = existing[0]
 
-            st.markdown("#### Answer (from history):")
+            st.markdown("#### Answer (from history)")
             st.write(result["Answer"])
 
-            references = result["References"]
+            st.session_state.references = result.get("References", [])
 
 # ----------------------------
-# REFERENCES VIEW
+# REFERENCES
 # ----------------------------
-if "references" in locals() and references:
-
+if st.session_state.references:
     if st.button("Show Related Information"):
-        st.markdown("#### Related Information:")
+        st.markdown("#### Related Information")
 
-        for i, doc in enumerate(references):
+        for i, doc in enumerate(st.session_state.references):
             st.markdown(f"**Reference {i+1}:**")
             st.write(doc)
             st.write("---")
