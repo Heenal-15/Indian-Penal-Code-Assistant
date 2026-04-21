@@ -1,5 +1,6 @@
 import os
 import sys
+from dotenv import load_dotenv
 from langchain.prompts import ChatPromptTemplate
 from langchain_community.llms.ollama import Ollama
 from langchain_community.embeddings import OllamaEmbeddings
@@ -14,9 +15,10 @@ from langchain_pinecone import PineconeVectorStore
 parent_dir = os.path.abspath(os.path.join(os.path.dirname('langchain_token'), '..'))
 sys.path.insert(0, parent_dir)
 #from langchain_token import pinecone_api_key 
+load_dotenv()
 pinecone_api_key = os.getenv("PINECONE_API_KEY")
-pinecone_api_key = 'pcsk_3jrKUv_TBc1wJ1ert9Lzyd5fBmnvxiT5MoFN61Lcgea7mGYnaUEcR3CmX9ReiJh6CgewZJ'
-os.environ['PINECONE_API_KEY'] = pinecone_api_key
+
+#os.environ['PINECONE_API_KEY'] = pinecone_api_key
 
 #setting embeddings_falg to False as embedddings are already taken and stored in the db
 

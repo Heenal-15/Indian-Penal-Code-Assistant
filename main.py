@@ -2,6 +2,13 @@ import streamlit as st
 from db_operations import * 
 from app import *
 
+@st.cache_resource
+def load_vectorstore():
+    return PineconeVectorStore(
+        embedding=embeddings,
+        index_name=index_name
+    )
+
 st.set_page_config(page_title="Indian Penal Code Assistant", layout="wide", page_icon="⚖️")
 
 st.markdown(
@@ -104,8 +111,12 @@ st.markdown("### Ask a New Question")
 input_text = st.text_input("Enter your query about Indian law:", placeholder="E.g., What is the punishment for theft under IPC?")
 if input_text:
     with st.spinner("Retrieving information..."):
-        db_response = list_history_from_db(condition= f"question='{input_text}'")
-            
+        #db_response = list_history_from_db(condition= f"question='{input_text}'")
+        db_response = list_history_from_db()
+        result = [
+            r for r in db_response.get('result', [])
+            if r['Question'].strip().lower() == input_text.strip().lower()
+        ]
         if len(db_response.get('result', [])) == 0:
             response, references = get_assistance(input_text.strip())
             save_query_to_db(input_text, response.get('answer', 'No answer found'), references)
