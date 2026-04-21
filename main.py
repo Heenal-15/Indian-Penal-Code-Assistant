@@ -1,16 +1,16 @@
 import streamlit as st
-from db_operations import * 
-from app import *
+from db_operations import *
+from app import get_assistance, generate_embeddings
 
-@st.cache_resource
-def load_vectorstore():
-    return PineconeVectorStore(
-        embedding=embeddings,
-        index_name=index_name
-    )
+st.set_page_config(
+    page_title="Indian Penal Code Assistant",
+    layout="wide",
+    page_icon="⚖️"
+)
 
-st.set_page_config(page_title="Indian Penal Code Assistant", layout="wide", page_icon="⚖️")
-
+# ----------------------------
+# STYLES
+# ----------------------------
 st.markdown(
     """
     <style>
@@ -38,10 +38,15 @@ st.markdown(
         padding-bottom: 10px;
     }
     </style>
-    """, unsafe_allow_html=True
+    """,
+    unsafe_allow_html=True
 )
 
-col1, col2 = st.columns([4, 1])  
+# ----------------------------
+# HEADER
+# ----------------------------
+col1, col2 = st.columns([4, 1])
+
 with col1:
     st.markdown('<div class="title">⚖️ Indian Penal Code Assistant</div>', unsafe_allow_html=True)
     st.markdown('<div class="subtitle">Your AI assistant for Indian legal queries</div>', unsafe_allow_html=True)
@@ -49,96 +54,123 @@ with col1:
 with col2:
     if st.button("Generate Embeddings"):
         with st.spinner("Generating embeddings..."):
-            response = generate_embeddings()
-            st.success(response)
+            msg = generate_embeddings()
+            st.success(msg)
 
+# ----------------------------
+# SESSION STATE INIT
+# ----------------------------
+if "history" not in st.session_state:
+    history = list_history_from_db()
+    st.session_state.history = history.get("result", []) if history["status"] == "success" else []
+
+if "selected_question" not in st.session_state:
+    st.session_state.selected_question = None
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# ----------------------------
+# SIDEBAR HISTORY
+# ----------------------------
 with st.sidebar:
     st.markdown('<div class="sidebar-section"><b>Recently Asked Questions</b></div>', unsafe_allow_html=True)
-    
-    if 'history' not in st.session_state:
-        history = list_history_from_db()
-        if history['status'] == 'success':
-            st.session_state.history = history.get('result', [])
-        else:
-            st.session_state.history = []
 
     for idx, entry in enumerate(st.session_state.history, start=1):
-        question = entry['Question']
-        answer = entry['Answer']
-        question_id = entry['ID']
-        references = entry['References']
-        
-        if st.button(f"{idx}. {question}", key=f"question_{question_id}"):
-            st.session_state.selected_question = question
-            st.session_state.selected_answer = answer
-            st.session_state.selected_id = question_id
+        question = entry["Question"]
+        question_id = entry["ID"]
 
+        if st.button(f"{idx}. {question}", key=f"q_{question_id}"):
+            st.session_state.selected_question = entry
+
+# ----------------------------
+# SELECTED QUESTION VIEW
+# ----------------------------
 st.markdown("### Query Assistant")
 
-if 'selected_question' in st.session_state:
-    selected_question = st.session_state.selected_question
-    selected_answer = st.session_state.selected_answer
-    question_id = st.session_state.selected_id
-    
-    st.write(f"#### Selected Question: {selected_question}")
-    st.write(f"**Answer:** {selected_answer}")
+if st.session_state.selected_question:
+    entry = st.session_state.selected_question
 
-    updated_question = st.text_input("Update Question", value=selected_question)
-    if updated_question != selected_question:
-        with st.spinner("Retrieving updated answer..."):
-            updated_answer, updated_references = get_assistance(updated_question)
-        
-        st.write(f"**Updated Answer:** {updated_answer}")
-        
-        if st.button("Save Updated Question and Answer"):
-            update_history_in_db(question_id, updated_question, updated_answer, updated_references)
+    st.write(f"#### Selected Question: {entry['Question']}")
+    st.write(f"**Answer:** {entry['Answer']}")
 
-            st.session_state.selected_question = updated_question
-            st.session_state.selected_answer = updated_answer
+    if st.button("Delete This Question"):
+        delete_history_from_db(entry["ID"])
 
-            st.session_state.history = list_history_from_db()['result']
-            st.success("Question and answer updated successfully!")
+        st.session_state.history = list_history_from_db().get("result", [])
+        st.session_state.selected_question = None
 
-    if st.button("Delete this Question"):
-        delete_history_from_db(question_id)
-        del st.session_state.selected_question
-        del st.session_state.selected_answer
+        st.success("Deleted successfully!")
 
-        st.session_state.history = list_history_from_db()['result']
-        st.success("Question deleted successfully!")
-
+# ----------------------------
+# NEW QUESTION INPUT
+# ----------------------------
 st.markdown("### Ask a New Question")
-input_text = st.text_input("Enter your query about Indian law:", placeholder="E.g., What is the punishment for theft under IPC?")
-if input_text:
-    with st.spinner("Retrieving information..."):
-        #db_response = list_history_from_db(condition= f"question='{input_text}'")
+
+user_input = st.text_input(
+    "Enter your query about Indian law:",
+    placeholder="E.g., What is the punishment for theft under IPC?"
+)
+
+if user_input:
+
+    with st.spinner("Agent is thinking..."):
+
+        # ❗ FIXED: no SQL string condition
         db_response = list_history_from_db()
-        result = [
-            r for r in db_response.get('result', [])
-            if r['Question'].strip().lower() == input_text.strip().lower()
+        existing = [
+            r for r in db_response.get("result", [])
+            if r["Question"].strip().lower() == user_input.strip().lower()
         ]
-        if len(db_response.get('result', [])) == 0:
-            response, references = get_assistance(input_text.strip())
-            save_query_to_db(input_text, response.get('answer', 'No answer found'), references)
-            
-            st.markdown("#### Answer:")
-            st.write(response.get('answer', "No response available."))
-            st.session_state.references = references
 
+        # ----------------------------
+        # IF NOT IN DB → CALL AGENT
+        # ----------------------------
+        if len(existing) == 0:
+
+            response = get_assistance(user_input.strip())
+
+            answer = response["answer"]
+            route = response["route"]
+            references = response["references"]
+
+            save_query_to_db(user_input, answer, references)
+
+            st.success(f"Agent Route: {route}")
+
+            st.markdown("#### Answer:")
+            st.write(answer)
+
+            st.session_state.history = list_history_from_db().get("result", [])
+
+        # ----------------------------
+        # IF ALREADY EXISTS
+        # ----------------------------
         else:
-            result = db_response.get('result', [])[0]
-            response, references = result.get('Answer'), result.get('References')
+            result = existing[0]
 
-            st.markdown("#### Answer:")
-            st.write(response)
-            st.session_state.references = references
+            st.markdown("#### Answer (from history):")
+            st.write(result["Answer"])
 
-        if 'references' in st.session_state and st.session_state.references:
-            if st.button("Show Related Information"):
-                st.markdown("#### Related Information:")
-                for i, doc in enumerate(st.session_state.references):
-                    st.markdown(f"**Reference {i+1}:**")
-                    st.write(doc)
-                    st.write("---")
+            references = result["References"]
 
-st.markdown('<div class="footer">© 2025 Indian Penal Code Assistant </div>', unsafe_allow_html=True)
+# ----------------------------
+# REFERENCES VIEW
+# ----------------------------
+if "references" in locals() and references:
+
+    if st.button("Show Related Information"):
+        st.markdown("#### Related Information:")
+
+        for i, doc in enumerate(references):
+            st.markdown(f"**Reference {i+1}:**")
+            st.write(doc)
+            st.write("---")
+
+# ----------------------------
+# FOOTER
+# ----------------------------
+st.markdown(
+    '<div class="footer">© 2025 Indian Penal Code Assistant</div>',
+    unsafe_allow_html=True
+)
