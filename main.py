@@ -171,6 +171,6 @@ if "references" in locals() and references:
 # FOOTER
 # ----------------------------
 st.markdown(
-    '<div class="footer">© 2025 Indian Penal Code Assistant</div>',
+    '<div class="footer">© 2026 Indian Penal Code Assistant</div>',
     unsafe_allow_html=True
 )
